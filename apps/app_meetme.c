@@ -6851,6 +6851,7 @@ struct dial_trunk_args {
 	struct sla_station *station;
 	ast_mutex_t *cond_lock;
 	ast_cond_t *cond;
+	char *number;
 };
 
 static void *dial_trunk(void *data)
@@ -6878,7 +6879,18 @@ static void *dial_trunk(void *data)
 
 	tech_data = ast_strdupa(trunk_ref->trunk->device);
 	tech = strsep(&tech_data, "/");
-	if (ast_dial_append(dial, tech, tech_data, NULL) == -1) {
+	char *number;
+	if (args->number) {
+		char *line = strchr(tech_data, '@');
+		number = ast_alloca(1 + strlen(line) + strlen(args->number));
+		strcpy(number, args->number);
+		strcat(number, line);
+	} else {
+		number = tech_data;
+	}
+	ast_log(LOG_NOTICE, "Calling number '%s'\n", number);
+
+	if (ast_dial_append(dial, tech, number, NULL) == -1) {
 		ast_mutex_lock(args->cond_lock);
 		ast_cond_signal(args->cond);
 		ast_mutex_unlock(args->cond_lock);
@@ -7009,12 +7021,18 @@ static struct sla_trunk_ref *sla_choose_idle_trunk(const struct sla_station *sta
 
 static int sla_station_exec(struct ast_channel *chan, const char *data)
 {
-	char *station_name, *trunk_name;
+	char *station_name, *trunk_name, *number = NULL;
 	RAII_VAR(struct sla_station *, station, NULL, ao2_cleanup);
 	RAII_VAR(struct sla_trunk_ref *, trunk_ref, NULL, ao2_cleanup);
 	char conf_name[MAX_CONFNUM];
 	struct ast_flags64 conf_flags = { 0 };
 	struct ast_conference *conf;
+
+	AST_DECLARE_APP_ARGS(args,
+			     AST_APP_ARG(trunk_name);
+			     AST_APP_ARG(number);
+			     );
+	char *parse;
 
 	if (ast_strlen_zero(data)) {
 		ast_log(LOG_WARNING, "Invalid Arguments to SLAStation!\n");
@@ -7022,8 +7040,16 @@ static int sla_station_exec(struct ast_channel *chan, const char *data)
 		return 0;
 	}
 
-	trunk_name = ast_strdupa(data);
+	parse = ast_strdupa(data);
+	AST_STANDARD_APP_ARGS(args, parse);
+
+	trunk_name = args.trunk_name;
 	station_name = strsep(&trunk_name, "_");
+
+	if (args.argc > 1) {
+		ast_log(LOG_NOTICE, "Number arg '%s' received\n", args.number);
+		number = args.number;
+	}
 
 	if (ast_strlen_zero(station_name)) {
 		ast_log(LOG_WARNING, "Invalid Arguments to SLAStation!\n");
@@ -7102,6 +7128,7 @@ static int sla_station_exec(struct ast_channel *chan, const char *data)
 			.station = station,
 			.cond_lock = &cond_lock,
 			.cond = &cond,
+			.number = number
 		};
 		ao2_ref(trunk_ref, 1);
 		ao2_ref(station, 1);
